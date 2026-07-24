@@ -1,0 +1,53 @@
+services:
+  loader:
+    build: ./loader
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      CHROMA_DIR: /data/chroma
+      CHROMA_COLLECTION: acme_docs
+      DOCS_DIR: /data/documents
+    volumes:
+      - ./data/documents:/data/documents:ro
+      - ./chroma_data:/data/chroma
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: ["load"]
+
+  rag-unguarded:
+    build: ./rag_app
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      CHROMA_DIR: /data/chroma
+      CHROMA_COLLECTION: acme_docs
+      USE_GUARDRAILS: "false"
+      INSTANCE_NAME: unguarded
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./chroma_data:/data/chroma:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  rag-guarded:
+    build:
+      context: ./rag_app
+      dockerfile: Dockerfile.guarded
+    depends_on:
+      - rag-unguarded
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      CHROMA_DIR: /data/chroma
+      CHROMA_COLLECTION: acme_docs
+      USE_GUARDRAILS: "true"
+      INSTANCE_NAME: guarded
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./chroma_data:/data/chroma:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
