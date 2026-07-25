@@ -293,6 +293,13 @@ Retrieval is **deterministic** given a fixed query and embedding model. Attacker
 - **`Sensitive` output scanner caught the base64-config-hash attack.** Ambiguous whether this is a true or false positive — depends on downstream consumer. Real production tuning happens here.
 - **The interesting failure: markdown-image exfil URL passed both defenses.** Input scanner had no visibility (payload was in retrieved doc, not user input). Output scanner has no URL detection category. This is the strongest live gap in the lab.
 
+#### Formal Phase 1 validation (manual exploitation walkthrough)
+
+- Documented seven attacks (benign control + 5 direct injection variants + 1 indirect injection) against both instances as a Phase 1 done-when artifact: [results/phase1_manual_exploitation.md](results/phase1_manual_exploitation.md).
+- **0/7 secret leaks. 5/7 direct attacks blocked by LLM Guard's input scanner. 1/7 indirect attack passed both defenses (known live gap).** Every done-when criterion has evidence.
+- The walkthrough is written as a teaching artifact — each attack has concept → hypothesis → response → interpretation → lesson. Re-readable as prep for future engagements or as a template for other targets.
+- Reusable prompt patterns for future rounds: naive-ignore, delimiter+fake-completion, DAN/persona, authority-impersonation, encoded-output, indirect-via-poisoned-doc.
+
 #### AI security engineering concepts internalized in Phase 1
 
 - Prompt injection is a consequence of instruction/data indistinguishability in the concatenated prompt string.
