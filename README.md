@@ -222,6 +222,18 @@ Running notebook of concepts and techniques picked up while building this lab. O
 
 ### Phase 1 — Attack lab setup
 
+#### Objectives
+
+**Understand.** What a RAG application is at the plumbing level. Where prompt injection actually comes from architecturally — the concatenation of trusted (system prompt) + semi-trusted (retrieved context) + untrusted (user input) strings into one blob the model can't disambiguate. What "poisoned document" means in a RAG context. What a guardrail library provides — and doesn't.
+
+**Apply.** Stand up an LLM-backed service end-to-end (embedding model + vector store + chat model + API). Deploy identical services in a controlled A/B configuration for defense comparison. Instrument the request path for red-team observability (debug flags, prompt visibility).
+
+**Analyze.** Score attack attempts objectively (regex-based leak detection vs subjective reading). Distinguish payload delivery from payload execution — a payload landing in retrieval is not the same as a leak. Read defense-in-depth outcomes (same result, different mechanism, different cost).
+
+**Create.** Author intentionally vulnerable content with distinct injection styles. Design a controlled experiment for comparing defenses (matched instances, one variable). Build a reusable attack harness with both machine- and human-readable output.
+
+**Artifacts:** two working RAG instances, 20-doc corpus (5 poisoned), attack harness, Round 1 comparison results, public GitHub repo with disclaimer + README.
+
 #### Lab plumbing
 
 - **Ollama serves generation, not embeddings, by default.** `llama3.x` chat models return HTTP 501 on `/api/embed`. Need a dedicated embedding model — `nomic-embed-text` (274MB) is the standard for local RAG.
@@ -293,6 +305,20 @@ Retrieval is **deterministic** given a fixed query and embedding model. Attacker
 
 ### Phase 2 — Garak deep dive
 
+#### Objectives
+
+**Understand.** What an LLM vulnerability scanner is, and how it differs from web-app scanners (non-deterministic outputs, statistical detection, fuzzy attack class). Garak's architecture: probes / detectors / generators / harnesses / buffs — the pattern reappears in every serious AI red-team tool. AI security taxonomies: OWASP LLM Top 10, AVID, MITRE ATLAS — every writeup cites them. The attack-surface enumeration: direct injection, indirect (latent) injection, jailbreaks, encoding attacks, divergence/data leakage.
+
+**Apply.** Install and run a red-team framework end-to-end against a real target (non-trivial dep stack, CLI quirks, output artifact hunting — transferable to every AI red-team tool). Configure a REST generator for a non-standard target (RAG apps, agent APIs — the `RestGenerator` JSON-template pattern). Run bounded scans intelligently — full runs take 6+ hours, scoping is a skill. Read scanner output — understand what "attack success rate: 42%" means, when a probe can `FAIL` on a benign target, and how to trace a hit from summary to per-attempt log.
+
+**Analyze.** Compare defense effectiveness across a probe grid — which attack classes are stopped by which layer (model alignment vs system prompt vs LLM Guard). Attribute failure to the right layer: a "pass" on the guarded instance might mean the guardrail worked, the model refused, or the RAG chain diluted the payload — same outcome, different root cause. Identify coverage gaps in existing tooling (input to Task 6).
+
+**Create.** Write code inside a framework's conventions (probe class structure, metadata tags, primary detector, instantiation lifecycle). Design a novel attack in code — not just running someone else's attacks, inventing one. Package for open-source contribution: docstrings, tests, contribution guidelines, PR description. A merged upstream PR is a stronger portfolio signal than any writeup.
+
+**Evaluate.** Judge tool limits honestly. By the end of Phase 2 you should be able to say what Garak *cannot* effectively test in our setup (multi-turn chains, agentic tool-use, RAG-specific retrieval steering) — which motivates Phase 3.
+
+**Artifacts:** scan results for both instances (raw JSONL + HTML), written comparison analysis mapped to OWASP LLM categories, custom probe module in `garak.probes.*` structure, either merged upstream or shipped standalone.
+
 #### What Garak actually is
 
 - **Garak is a "vulnerability scanner for LLMs" — think Nessus/Nikto for language models.** Combines a bunch of pluggable attack **probes** with post-hoc **detectors** that check whether the model's output indicates a hit. Also has **buffs** (prompt-transformation wrappers) and **harnesses** (execution strategies).
@@ -342,19 +368,61 @@ Not every probe fits every target — some assume specific model quirks. Pick pr
 
 ### Phase 3 — PyRIT + advanced attack chains
 
-*Populated as Phase 3 progresses.*
+#### Objectives
+
+**Understand.** Where PyRIT sits relative to Garak — Garak is a batch scanner; PyRIT is an attack *orchestrator* for chained, multi-turn, and adaptive attacks. PyRIT's orchestrator / target / prompt-converter / scorer architecture. Why single-turn scanners systematically miss chained and adversarial-multi-turn threats.
+
+**Apply.** Install and configure PyRIT against the existing target. Reproduce example notebooks well enough to understand orchestrator patterns. Build single-turn attack collections that mirror Garak's coverage but with PyRIT's mechanics. Compose multi-turn sequences where each message uses the previous response as leverage.
+
+**Analyze.** Diagnose *why* a multi-turn chain succeeds or fails — context accumulation, trust erosion, topic drift, refusal-desensitization patterns. Distinguish attacks that succeed because of the model, the RAG chain, or the conversational structure.
+
+**Create.** Design a combined indirect-injection + conversational-steering chain: trigger poisoned retrieval, then use the response as attacker leverage for the next step. Test injection through non-obvious channels (query params, metadata, doc titles vs bodies) — user input isn't the only attacker-controlled surface.
+
+**Artifacts:** ≥3 working multi-turn chains, ≥1 chain that successfully extracts a secret, per-chain writeup of attack logic and outcome.
+
+*Notes populated as Phase 3 progresses.*
 
 ### Phase 4 — Infrastructure + supply chain
 
-*Populated as Phase 4 progresses.*
+#### Objectives
+
+**Understand.** The attack surface *around* the model — API layer, model artifacts, registries, tool endpoints — not just the model itself. The pickle-based model-serialization attack chain and why it persists across the ML ecosystem. What ModelScan actually inspects and where it falls short. Model registry threat model: access control failure modes, artifact-swap attacks, dependency confusion.
+
+**Apply.** Write API-fuzzing / recon scripts (error-message fingerprinting, rate-limit probing, boundary conditions, unicode / null-byte edge cases). Scan real Hugging Face models with ModelScan. Stand up and probe a local MLflow instance for default-config vulnerabilities. Test for SSRF in any tool-calling endpoints.
+
+**Create.** Author a proof-of-concept malicious pickle with a benign observable payload (echo, write to `/tmp`) — demonstrating the attack chain without harm. Document the pickle attack chain step-by-step for a security audience. Write an MLflow attack-surface assessment from your own probing.
+
+**Artifacts:** API probe script + findings, ModelScan results for 3-5 HF models, PoC pickle + detection demonstration, MLflow assessment writeup.
+
+*Notes populated as Phase 4 progresses.*
 
 ### Phase 5 — Detection + blue team
 
-*Populated as Phase 5 progresses.*
+#### Objectives
+
+**Understand.** The blue-team side of AI security — instrumentation, log analysis, detection-rule engineering. What signal actually distinguishes attack traffic from normal traffic in LLM API logs (this is *semantic*, not structural — different from HTTP/network detection). Suricata rule syntax basics if targeting Security Onion.
+
+**Apply.** Instrument an application with structured request/response logging. Replay captured attacks and extract distinguishing features. Write detection rules in your platform's language (Suricata, Python log parsers, SIEM rule DSL). Evaluate rules against benign traffic for false-positive rate.
+
+**Create.** Author ≥3 detection signatures across categories: direct injection, encoding attacks, anomalous query patterns, rate-based enumeration, suspicious model output. Tune each rule to a defensible FPR against realistic benign volume.
+
+**Artifacts:** logging instrumentation, replayed attack corpus, 3-5 tested detection rules, FPR assessment.
+
+*Notes populated as Phase 5 progresses.*
 
 ### Phase 6 — Portfolio sprint
 
-*Populated as Phase 6 progresses.*
+#### Objectives
+
+**Understand.** How security findings become writeups — the finding-template pattern (title, technique, taxonomy, repro, evidence, defense recommendation). How to talk about AI security findings in language a security audience understands. What makes an open-source security contribution merge-worthy.
+
+**Apply.** Structure 3-5 writeups from a month's raw output — selecting the strongest findings, discarding the noise. Map each finding to OWASP LLM Top 10 and MITRE ATLAS technique IDs. Follow a project's contribution guidelines (PR description, tests, style). Organize a public repo for cold consumption — the difference between a working directory and a published portfolio artifact.
+
+**Create.** Package the custom Garak probe from Phase 2 for merge or standalone release. Author the writeups. Rewrite the README so someone landing cold understands what this project is and why it matters.
+
+**Artifacts:** 3-5 finding writeups in `/writeups`, Garak probe published (PR or standalone repo), organized public repo, verified setup instructions from a clean clone.
+
+*Notes populated as Phase 6 progresses.*
 
 ## License
 
