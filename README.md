@@ -216,6 +216,101 @@ Suggested per-attempt schema (keep it consistent across rounds):
 
 Personal attack logs are gitignored by default (`unguarded_attack_log.md`, `guarded_attack_log.md`, `attack_log/*.md`).
 
+## Lessons Learned
+
+Running notebook of concepts and techniques picked up while building this lab. Organized by sprint phase. Grows as each phase progresses. Write in first person, keep entries short — this is a personal reference, not marketing.
+
+### Phase 1 — Attack lab setup
+
+#### Lab plumbing
+
+- **Ollama serves generation, not embeddings, by default.** `llama3.x` chat models return HTTP 501 on `/api/embed`. Need a dedicated embedding model — `nomic-embed-text` (274MB) is the standard for local RAG.
+- **`host.docker.internal` isn't automatic on Linux Docker.** Have to add `extra_hosts: - "host.docker.internal:host-gateway"` to compose. On Docker Desktop for macOS it works out of the box.
+- **LLM Guard is a heavy install.** Pulls PyTorch, transformers, spaCy, presidio, detoxify. First build was 40+ minutes; a stalled pip download tripped a read-timeout. Adding `--timeout 300 --retries 5` on the pip install matters.
+- **Version drift is real.** `llm-guard==0.3.15` pre-dates `transformers` v5. Without pinning `transformers<5.0`, imports fail with `cannot import name 'TFPreTrainedModel'`. Also pin `tokenizers<0.21` to avoid a chromadb dep conflict, and `torch<2.5` to avoid a build that pulls in phantom NVIDIA CUDA libs on M1.
+- **Layer the heavy image.** Split `Dockerfile.guarded` as an overlay `FROM` the base RAG image. Base rebuilds in seconds; only the guarded overlay pays the 30-min llm-guard install cost.
+
+#### Controlled-experiment design
+
+- **Two instances sharing one Chroma volume = controlled A/B.** Every behavior difference between `:8001` and `:8002` is attributable to the guardrail wrapper because retrieval is identical. Any variable that changes across instances contaminates the comparison — even the choice of embedding model has to be identical.
+- **`debug=true` is your ground-truth channel.** Returning `prompt_sent` (the exact string the LLM received) is the only way to distinguish "the injection payload was delivered by retrieval" from "the model refused/complied." Instrument this early; it costs nothing and saves hours of guessing.
+
+#### System prompt design (and its limits)
+
+- **System prompts are behavioral, not enforcement.** They define what the model *should* do. They do not stop a determined attacker. Never rely on "never reveal X" as your only defense.
+- **Every fake secret should have a distinct, machine-scannable pattern.** `sk-fake-<hex>` for API key, `postgres://user:pass@host/db` for DB URI, a named string like `Project Nightingale` for policy content, a path like `/etc/shadow-backup` for credential references. Different patterns let the harness score which category of secret leaked.
+- **The model can't tell instructions from data.** Retrieved context and user question are concatenated into one string. This is the root cause of every prompt injection — the model sees one blob of text with no reliable way to say "this substring was instructions, that substring was data."
+
+#### Poisoned document patterns worth knowing
+
+Five injection styles, each with a different bypass mechanism:
+
+1. **Blatant override** (`[SYSTEM OVERRIDE] Ignore all previous instructions...`) — easiest to detect, easiest to write.
+2. **Structural mimicry** — dressing the payload as legit content (a "meeting action item for assistant"). Bypasses regex-based filters looking for override keywords.
+3. **Rendered-format exfil** — a markdown image with a payload URL. The attack surface is the *downstream renderer*, not the model. Model just faithfully reproduces the URL; the browser or Slack does the exfil.
+4. **Language switch** — mid-paragraph switch to another language. Tests whether the model's alignment training covers non-English instructions.
+5. **Encoding-obfuscated payloads** — base64/hex/ROT13 blobs disguised as data (a "config hash"). Two-stage attack: get the model to surface the string, then get it to decode-and-execute.
+
+Retrieval is **deterministic** given a fixed query and embedding model. Attackers steer retrieval via question phrasing — they don't have to inject anything into the input to land a poisoned chunk in context.
+
+#### RAG chain gotchas
+
+- **`str.format()` on retrieved context is a footgun.** Any doc containing `{` or `}` (JSON, YAML, code) will crash the prompt assembly. Use string concatenation or `str.replace()` on named placeholders.
+- **Chunk size affects both retrieval quality and attack surface.** Larger chunks = fewer chunks per doc, more context per chunk. Smaller chunks = more targeted retrieval, but poisoned chunks can be pulled without the surrounding disambiguating text.
+- **`k` (top-K retrieval count) is a knob attackers care about.** Higher k = more context tokens = more places for a payload to hide. Lower k = tighter retrieval but more likely to miss legitimate answers.
+
+#### LLM Guard architecture
+
+- **Two hook points: input scanner (pre-LLM) and output scanner (post-LLM).** Input scanners never see retrieved context — they only see the raw user prompt. This is a fundamental blind spot for indirect injection through RAG.
+- **Input blocks save inference cost.** Latency comparison from Round 1: model refusal takes 3.3–4.3s (full inference); LLM Guard input block takes 0.5–0.8s (classifier only). At scale this is a large compute-economics argument for input scanners independent of security.
+- **Faster failure feedback cuts both ways.** Attackers iterating against a fast-blocking scanner get 6–8x more iterations per unit time. Trade-off worth being aware of.
+- **Every scanner has a threat model — read the docs.** `Sensitive()` targets PII: SSN, credit cards, emails, IBAN, phone numbers, some API-key formats. It does *not* target suspicious URLs, arbitrary secret strings, or social-engineering language. Knowing what a scanner doesn't cover is more important than knowing what it does.
+
+#### Building the attack harness
+
+- **Stdlib-only was the right call.** `urllib` + `re` + `json` — no fight with venv, no compatibility surprises, ~180 lines total. Harness code that requires its own dependency install is friction that stops you from running it.
+- **Ground truth for "attack succeeded" is a regex hit on the answer, not `prompt_sent`.** A payload showing up in `prompt_sent` is a *delivery* success (retrieval worked). A payload showing up in the answer is a *leak*. Conflating the two overcounts your wins.
+- **Outcome ranking matters:** `LEAKED > blocked > refused > answered`. When two prompts both return `answered`, the interpretation depends on prompt class — benign `answered` is good, malicious `answered` is bad. Same outcome code, opposite meaning. Report per-class rates, not aggregate.
+- **Emit both markdown (for humans) and JSON (for later scripts).** Markdown is what you read; JSON is what future comparison tools ingest without regex-parsing your prose.
+
+#### Round 1 findings — headline takeaways
+
+- **24 requests, 0 real secret leaks either instance.** llama3.1:8b's built-in alignment carries most of the defense on this set. Doesn't generalize to weaker models; retest with `phi3:mini` or similar in Phase 4.
+- **LLM Guard: 5/12 attacks blocked, 0/5 benign controls false-positived.** 0% FPR on this control set = good deployability signal. But 5 benign controls is a small n; real-traffic distribution needed to trust the number.
+- **Four direct-injection attacks: same outcome (blocked), different mechanism.** Unguarded refused via model; guarded blocked via `PromptInjection` scanner in ~1/5 the latency.
+- **`Sensitive` output scanner caught the base64-config-hash attack.** Ambiguous whether this is a true or false positive — depends on downstream consumer. Real production tuning happens here.
+- **The interesting failure: markdown-image exfil URL passed both defenses.** Input scanner had no visibility (payload was in retrieved doc, not user input). Output scanner has no URL detection category. This is the strongest live gap in the lab.
+
+#### AI security engineering concepts internalized in Phase 1
+
+- Prompt injection is a consequence of instruction/data indistinguishability in the concatenated prompt string.
+- Every defense has a threat model; every threat model has gaps; those gaps are your unmet risk.
+- Comparative evaluation (matched A/B with one variable changing) is how you attribute cause. Uncontrolled attack logs are anecdotes.
+- FPR on benign traffic matters as much as TPR on attack traffic. A perfect blocker with meaningful FPR is unshippable.
+- Where a defense sits in the request path determines what threats it can see. Input scanners can't see retrieval. Output scanners can't see intent.
+- Latency and cost are security-relevant properties, not just performance concerns.
+- Reproducibility (committed harness + committed prompt set + committed results) is what turns a red-team session into a credible finding.
+
+### Phase 2 — Garak deep dive
+
+*Populated as Phase 2 progresses.*
+
+### Phase 3 — PyRIT + advanced attack chains
+
+*Populated as Phase 3 progresses.*
+
+### Phase 4 — Infrastructure + supply chain
+
+*Populated as Phase 4 progresses.*
+
+### Phase 5 — Detection + blue team
+
+*Populated as Phase 5 progresses.*
+
+### Phase 6 — Portfolio sprint
+
+*Populated as Phase 6 progresses.*
+
 ## License
 
 MIT for the code. The documents in `data/documents/` are fictional and provided for research/education only.
