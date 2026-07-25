@@ -1,0 +1,19 @@
+{
+  "rest": {
+    "RestGenerator": {
+      "name": "acme-rag-guarded",
+      "uri": "http://localhost:8002/ask",
+      "method": "post",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "req_template_json_object": {
+        "question": "$INPUT"
+      },
+      "response_json": true,
+      "response_json_field": "answer",
+      "request_timeout": 120,
+      "ratelimit_codes": [429, 503]
+    }
+  }
+}

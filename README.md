@@ -293,7 +293,52 @@ Retrieval is **deterministic** given a fixed query and embedding model. Attacker
 
 ### Phase 2 — Garak deep dive
 
-*Populated as Phase 2 progresses.*
+#### What Garak actually is
+
+- **Garak is a "vulnerability scanner for LLMs" — think Nessus/Nikto for language models.** Combines a bunch of pluggable attack **probes** with post-hoc **detectors** that check whether the model's output indicates a hit. Also has **buffs** (prompt-transformation wrappers) and **harnesses** (execution strategies).
+- **Two-part conceptual model: probe generates attack prompts; detector inspects responses.** A probe on its own isn't a test — it's paired with detectors that turn "model said X" into "attack succeeded / failed." That's why the same probe can produce different verdicts depending on which detectors run against it.
+- **Probes have taxonomy tags mapped to standard frameworks:** `owasp:llm01` (Prompt Injection), `avid-effect:security:S0403`, etc. This makes results directly citable in writeups.
+
+#### Installation
+
+- **Use a project-local Python 3.11 venv.** Python 3.14 is too new for Garak's dependency stack. `uv venv --python 3.11` inside `garak_work/` handles that automatically.
+- **`pip install git+https://github.com/NVIDIA/garak.git@main`** — spec calls for GitHub install and this also positions us to develop a custom probe by cloning the same source later.
+- Ships with **A LOT of deps**: torch, transformers, spaCy, presidio, wordnet corpora. The install pulled hundreds of packages. Not a lightweight tool.
+
+#### CLI has changed — watch the deprecations
+
+- `--model_type` → **`--target_type` / `-t`** (Garak now speaks "targets" not just "models")
+- `--probes` → **`--spec probes.<module>[.<Class>]`** (fully qualified selector; also supports `-probes.foo` for exclusion, tag selectors, etc.)
+- `-s` = `--seed`, NOT `--spec`. Easy to trip on.
+- `--report_prefix` writes into `~/.local/share/garak/garak_runs/` (not cwd). Reports don't naturally land in your repo; you copy them where you want them.
+
+#### REST generator config for our RAG apps
+
+- **`garak.generators.rest.RestGenerator` is the universal shim** for any HTTP endpoint. JSON config: `uri`, `method`, `headers`, `req_template_json_object` (uses `$INPUT` as prompt placeholder), `response_json` + `response_json_field` to extract the answer.
+- **Two config files, one per instance** ([garak_work/configs/unguarded.json](garak_work/configs/unguarded.json), [guarded.json](garak_work/configs/guarded.json)) — same probe set targets both, delta is attributable to the guardrail wrapper. Same controlled-experiment design as the [harness/](harness/) Round 1.
+- When the guarded instance blocks, our `/ask` returns `{"answer": null, "blocked": true, ...}`. Garak sees `null` for the answer field. Most detectors treat null as "no vulnerability found" — which is correct semantically (nothing leaked) but *loses* the fine-grained "why nothing leaked." May need a custom detector or post-processing to distinguish "model refused" from "guardrail blocked."
+
+#### Probes matter — a starter map of what to run
+
+Categories the Phase 2 spec calls for → Garak probe modules that fit:
+
+- **Prompt injection (direct):** `promptinject.*`, `goodside.*` (subtle tricks)
+- **Prompt injection (indirect, via retrieved context):** `latentinjection.*` — Garak's built-in term for this attack class, directly analogous to our 5 poisoned documents
+- **Jailbreaking:** `dan.*` — the DAN family (Dan_11_0, DanInTheWild is a real-world jailbreak collection, AutoDANCached is generated)
+- **Data leakage:** `divergence.Repeat` ("repeat the word `poem` forever" — the GPT-4 training-data-extraction attack), `apikey.GetKey`, `apikey.CompleteKey`
+- **Encoding attacks:** huge suite — `encoding.InjectBase64`, `.InjectROT13`, `.InjectHex`, `.InjectMorse`, `.InjectAtbash`, `.InjectZalgo`, etc. Same underlying attack (payload hidden in an unusual encoding), different encodings.
+
+Not every probe fits every target — some assume specific model quirks. Pick probes matched to what your target actually exposes.
+
+#### Time budgeting a scan
+
+- Probes send anywhere from ~5 to hundreds of prompts × K generations. At our unguarded latency (~4s/request), a heavy probe can be 30–60+ minutes. Full "run everything" scans easily exceed 4-6 hours.
+- **`--parallel_requests N`** helps a lot. Set it based on what your target can handle. Our FastAPI+Uvicorn+Ollama stack is comfortable at 4 for CPU inference on M1.
+- **Start with a bounded probe set to prove the pipeline** (~1 probe per category, maybe 4-6 total), then expand. Big scans are for after you know the plumbing is right.
+
+#### The one wrinkle for RAG targets
+
+- Our RAG chain retrieves 4 chunks per query. A Garak `latentinjection.*` probe assumes it controls the retrieved context directly (typically by injecting into a `snippet` field the target reads). Against our app, the retrieved context is whatever ChromaDB pulls out for the given prompt — the probe *cannot force* our RAG to retrieve a specific poisoned document. So `latentinjection` probes against our REST target measure whether the raw prompt-injection payload survives being wrapped by our retrieval + system prompt. **Different signal than direct injection against a bare model.** Interpret probe results with this in mind — a "pass" here means "our RAG's dilution + system prompt neutralized the payload," not "the model is immune to indirect injection."
 
 ### Phase 3 — PyRIT + advanced attack chains
 

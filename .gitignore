@@ -19,6 +19,12 @@ guarded_attack_log.md
 attack_log/*.md
 !attack_log/template.md
 
+# Garak workspace - venv and raw scan outputs (can be large)
+garak_work/.venv/
+garak_work/scan_outputs/
+garak_work/garak_runs/
+garak.report.jsonl
+
 # OS / editor
 .DS_Store
 .idea/
