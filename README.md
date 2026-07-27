@@ -226,6 +226,18 @@ It's organized by sprint phase — each phase has an Objectives block plus subje
 - [results/phase1_manual_exploitation.md](results/phase1_manual_exploitation.md) — Phase 1 done-when validation via 7 manual attacks against both instances
 - [results/phase2_garak_comparison.md](results/phase2_garak_comparison.md) — Phase 2 unguarded-vs-guarded scan comparison (Garak). Headline: guarded had MORE secret leaks than unguarded via latent injection through RAG retrieval; `Sensitive` output scanner does not cover API keys / DB URIs / credential paths.
 
+## Custom garak probe
+
+Phase 2 Task 6-7 output: [`custom_garak/`](custom_garak/) — a standalone `markdown_exfil` probe + detector for **markdown-image data exfiltration**. Packaged for either upstream contribution to [NVIDIA/garak](https://github.com/NVIDIA/garak) or standalone use.
+
+- Probe: `custom_garak/probes/markdown_exfil.py` — three prompt families (direct request, substitution attack, task-framed rewrite)
+- Detector: `custom_garak/detectors/markdown_exfil.py` — regex-based, two-signal (sentinel domain OR exfil-shaped query parameters)
+- Tests: 17 unit tests, under 1s runtime
+- Deploy: `./custom_garak/deploy.sh <path/to/venv/python>` copies files into a target garak install
+- PR-ready body: [`custom_garak/PR_DESCRIPTION.md`](custom_garak/PR_DESCRIPTION.md) — paste into an upstream PR when opening one
+
+Real results against this lab: unguarded 2/50 hits (4%), guarded 1/50 hits (2.2%). Both defenses miss the exfil URL — LLM Guard's `Sensitive` output scanner is tuned for PII patterns, not suspicious URLs.
+
 ## License
 
 MIT for the code. The documents in `data/documents/` are fictional and provided for research/education only.

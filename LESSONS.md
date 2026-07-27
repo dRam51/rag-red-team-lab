@@ -176,6 +176,48 @@ Not every probe fits every target — some assume specific model quirks. Pick pr
 
 - Our RAG chain retrieves 4 chunks per query. A Garak `latentinjection.*` probe assumes it controls the retrieved context directly (typically by injecting into a `snippet` field the target reads). Against our app, the retrieved context is whatever ChromaDB pulls out for the given prompt — the probe *cannot force* our RAG to retrieve a specific poisoned document. So `latentinjection` probes against our REST target measure whether the raw prompt-injection payload survives being wrapped by our retrieval + system prompt. **Different signal than direct injection against a bare model.** Interpret probe results with this in mind — a "pass" here means "our RAG's dilution + system prompt neutralized the payload," not "the model is immune to indirect injection."
 
+#### Writing a custom Garak probe — the anatomy that transfers
+
+Everything Garak does is **two classes: a probe (attack prompt catalog) and a detector (scoring function over model outputs)**. They're linked by a string (`probe.primary_detector = "module.ClassName"`), not by import — decouples them so each is unit-testable independently.
+
+- **Class-level metadata is user-facing.** `lang`, `doc_uri`, `intent`, `tags`, `goal`, `tier`, `active`, `primary_detector` — Garak reads these off the class *before instantiating anything* to populate `--list_probes`, filtering, and taxonomy reports. A missing docstring makes your probe unfindable. Populate the tags with real OWASP LLM Top 10 + AVID codes so results are directly citable in security reports.
+- **Prompts organized into "families," not one flat list.** Each family targets a different failure mode of the same underlying attack. When something hits, you know *which mechanism* worked. My `markdown_exfil` probe: direct-request / substitution / task-framed-rewrite — three separate ways the same class of attack can succeed.
+- **Detector regex should be narrow, not clever.** `![.*](.*)` is a footgun — greedy match swallows into the next unrelated content. `!\[[^\]]*\]\((https?://[^)\s]+)\)` stops at the first `)` or whitespace inside the URL. In detectors, tight patterns beat clever ones every time.
+- **Two-signal detection beats open-set classification.** For URL detection, I did NOT try to determine "does this URL look legitimate" (real attackers use benign domains — impossible in general). Instead: (1) sentinel test domains injected in the probe + (2) query parameter names that betray exfil purpose (`?data=`, `?token=`). Either signal fires. This is a general security-detection pattern — prefer positive evidence of intent over trying to prove absence of legitimacy.
+
+#### Testing a Garak plugin without a full scan
+
+- **Stub `Attempt` with `SimpleNamespace(text=...)`.** Detectors only call `attempt.outputs_for()`, so a stand-in with that one method is all you need. Tests run in milliseconds instead of minutes.
+- **Test each regex primitive in isolation** before combining. When something's wrong you want to know *which* regex is broken, not that "the detector doesn't fire."
+- **Add metadata guardrail tests** — `assert probe.doc_uri and probe.doc_uri.startswith("http")`. Prevents embarrassment in upstream code review.
+
+#### Packaging for both PR and standalone
+
+- **Same code, two audiences.** For upstream contribution: files vendored into `garak/probes/` and `garak/detectors/` of a fork. For standalone portfolio use: your own repo directory with a README explaining the vulnerability class + install script + tests.
+- **A `deploy.sh` that resolves the target Garak install via `python -c "import garak; ..."`** is the cleanest way to iterate. `install -m 644` for idempotent redeploy.
+- **A `PR_DESCRIPTION.md` at the same level as the code** — pre-drafted PR body with taxonomy, motivation, test results, checklist. When you actually open the PR you copy-paste.
+- **Sentinel domains: use `.example.com` (RFC 2606).** They never resolve, safe in test fixtures, easy to grep for.
+
+#### Discoverability and the deploy pattern
+
+- Garak discovers plugins by scanning `garak/probes/*.py` inside its installed package directory. There's no first-class "extension path" — you either copy files into the installed package or use an editable install of a fork.
+- For iteration: `custom_garak/deploy.sh <venv-python>` copies files into the venv's Garak. Idempotent. Invisible to git — the source of truth is your `custom_garak/` directory.
+- For a real PR: clone the Garak repo, add files, `pip install -e ./garak-fork`, then open PR from the fork.
+- **Never edit files inside the venv directly.** They get overwritten on any reinstall, and the changes are invisible to git. Always edit `custom_garak/`, then redeploy.
+
+#### Phase 2 wrap — what a portfolio-visible AI red team artifact actually is
+
+Six ingredients I now recognize a portfolio-quality LLM-security finding needs:
+
+1. **Reproducible attack.** Committed prompts, committed config, committed target — anyone can rerun.
+2. **Comparative baseline.** Unguarded vs guarded, or before vs after — no comparison, no story.
+3. **Measured attack success rate**, not just "it worked once." Multi-generation runs quantify frequency.
+4. **Root-cause attribution.** Which layer failed, and *why* (architectural vs configuration vs threshold).
+5. **Taxonomy mapping.** OWASP LLM Top 10 + MITRE ATLAS technique IDs make the finding legible to a security audience.
+6. **Working code — probe, detector, or mitigation.** The best evidence you understood an attack is that you can automate testing for it.
+
+The `markdown_exfil` probe hits all six. The catastrophic latent-injection finding from the Phase 2 Garak scan hits five (no working automated probe — that's what motivated the custom one).
+
 ### Phase 3 — PyRIT + advanced attack chains
 
 #### Objectives

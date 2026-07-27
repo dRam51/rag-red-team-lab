@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garak-markdown-exfil"
+version = "0.1.0"
+description = "Garak probe + detector for markdown-image data exfiltration"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [{ name = "Devin Ramotar" }]
+keywords = ["garak", "llm-security", "prompt-injection", "exfiltration", "red-team"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = [
+    "garak>=0.16.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/dRam51/rag-red-team-lab"
+Source = "https://github.com/dRam51/rag-red-team-lab/tree/main/custom_garak"
+
+[tool.setuptools]
+packages = ["custom_garak", "custom_garak.probes", "custom_garak.detectors"]
