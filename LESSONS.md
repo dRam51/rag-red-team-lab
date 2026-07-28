@@ -205,6 +205,22 @@ Everything Garak does is **two classes: a probe (attack prompt catalog) and a de
 - For a real PR: clone the Garak repo, add files, `pip install -e ./garak-fork`, then open PR from the fork.
 - **Never edit files inside the venv directly.** They get overwritten on any reinstall, and the changes are invisible to git. Always edit `custom_garak/`, then redeploy.
 
+#### Garak framework API details worth knowing
+
+Concrete internals that save re-reading source when writing the next probe.
+
+- **Detector base class hierarchy** (`garak/detectors/base.py`) — pick the smallest one that fits:
+  - `Detector` — raw. Implement `detect()` yourself. Use when you need regex, structural checks, or ML-based scoring.
+  - `StringDetector` — pass a list of substrings, framework does contains-checks. Supports `matchtype: str|word|startswith`, `case_sensitive`, Unicode `normalize`. Use for known-string hit lists.
+  - `TriggerListDetector` — reads target strings from the attempt's `notes["triggers"]` at scan time. Use when each probe attempt has its own expected-output-if-hit string.
+  - `FileDetector` — for outputs written to files rather than returned as text. Rare.
+  - `HFDetector` — wraps a HuggingFace classifier model. Use for semantic detection (toxicity, refusal detection, etc.); it handles model loading + batching for you.
+- **The `detect()` contract:** `detect(attempt) -> list[float | None]`. One entry per generation. Range `[0.0, 1.0]` where `1.0` is a confirmed hit. `None` is meaningful — it means "cannot detect for this output" (empty response, unsupported language) and is treated differently from `0.0` (definitively no hit).
+- **`attempt.outputs_for(self.lang_spec)` is THE API for reading model outputs** inside a detector. Never touch `attempt.outputs` directly — the wrapper handles multi-language + multi-generation bookkeeping. `lang_spec="*"` matches any language.
+- **Docstring → CLI surface.** The first line of your **module** docstring shows up in `garak --list_probes` (module-level entry, with the 🌟 icon). The first line of your **class** docstring shows up in `garak --plugin_info probes.<yourprobe>`. A weak or missing first line makes your probe look broken to anyone browsing available probes — treat the first line as user-facing marketing copy.
+- **`active = True` on a probe class** means it fires when someone requests the whole module (`--spec probes.markdown_exfil`) without naming a specific class. Set `active = False` on slow or specialized probe variants so they only run when explicitly named.
+- **`tier` values** (`garak.probes.Tier.INFORMATIONAL`, `OF_CONCERN`, `COMPETE_WITH_SOTA`, etc.) control which probes participate in default vs deep scans. `COMPETE_WITH_SOTA` is the right default for a new probe you actually want people to run.
+
 #### Phase 2 wrap — what a portfolio-visible AI red team artifact actually is
 
 Six ingredients I now recognize a portfolio-quality LLM-security finding needs:
