@@ -25,6 +25,11 @@ garak_work/scan_outputs/
 garak_work/garak_runs/
 garak.report.jsonl
 
+# PyRIT workspace - venv and its own database/artifacts
+pyrit_work/.venv/
+pyrit_work/db/
+pyrit_work/results/
+
 # OS / editor
 .DS_Store
 .idea/

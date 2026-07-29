@@ -236,6 +236,32 @@ The `markdown_exfil` probe hits all six. The catastrophic latent-injection findi
 
 ### Phase 3 — PyRIT + advanced attack chains
 
+#### Install and version gotcha
+
+- **PyRIT 1.0.0 (2025) restructured heavily** from earlier tutorial/notebook content. If you follow older blog posts, `pyrit.orchestrator` won't import. It moved to `pyrit.executor.attack`. Top-level `pyrit` namespace is now nearly empty (`common`, `show_versions`, `turn_off_transformers_warning` only) — everything real is in submodules.
+- **`pip install git+https://github.com/Azure/PyRIT.git` fails** because the repo doesn't have `pyproject.toml` at root. Their build config lives elsewhere. Use `pip install pyrit` from PyPI — same code, official Microsoft/Azure channel, no clone-and-fight-build-system dance.
+- **Heavy dep stack.** PyRIT pulls Azure SDK (identity, keyvault, blob-storage, content-safety), OpenAI SDK, transformers, sqlalchemy + alembic (for its memory database), fastapi + uvicorn (for some target types), and about 100 other packages. Isolate in its own venv.
+
+#### The four-abstraction mental model (transfers to every attack scanner)
+
+PyRIT and any similar attack framework decompose into the same four concepts. Recognize them once, you recognize them everywhere.
+
+- **Target** — the thing being attacked. Wraps an API. PyRIT: `PromptTarget` + subclasses (`OpenAIChatTarget`, `HTTPTarget`, `HTTPXAPITarget`). Garak analog: `Generator`.
+- **Converter** — transforms a prompt before sending (encode as base64, translate to French, add DAN roleplay wrapper). PyRIT: `PromptConverter`. Garak analog: `Buff`.
+- **Scorer** — evaluates the response: did the attack succeed? PyRIT: `Scorer` + subclasses (`SelfAskTrueFalseScorer`, `SubStringScorer`). Garak analog: `Detector`.
+- **Attack strategy** (was called "Orchestrator" pre-1.0) — the actual attack: what to send, in what order, using which converters, scored by whom. Owns state. PyRIT: `AttackStrategy` + subclasses. Garak analog: loosely `Probe` + `Harness` combined.
+
+#### The core Garak-vs-PyRIT distinction
+
+- **Garak = batch scanner.** Each probe fires N independent prompts. Detectors score each one. No state between prompts. Excellent at coverage. Blind to any attack that requires previous-turn context.
+- **PyRIT = stateful orchestrator.** Multi-turn conversations where each turn is a function of the previous turn's response. Attack strategy owns the state machine (advance / retry / give up). This is why PyRIT is the right tool for chained + multi-turn attacks and Garak isn't.
+- **Neither replaces the other.** Garak for breadth, PyRIT for depth. In production red-team engagements you use both. Our Phase 2 vs Phase 3 split mirrors this exactly.
+
+#### Two PyRIT built-in attacks worth knowing by name
+
+- **`CrescendoAttack`** — "boiling frog" jailbreak. Uses a second LLM (the *adversarial model*) that reads the target's refusals and writes the next escalated prompt. Starts benign, gradually escalates topic sensitivity. Gives up if target holds firm. Requires configuring an adversarial LLM in addition to the target — for our lab, both are Ollama.
+- **`ManyShotJailbreakAttack`** — floods the context with many fake "attack succeeded" example turns before asking the real question. Exploits in-context learning: model sees the pattern and continues it. Requires a large context window on the target (which llama3.1:8b has — 128k).
+
 #### Objectives
 
 **Understand.** Where PyRIT sits relative to Garak — Garak is a batch scanner; PyRIT is an attack *orchestrator* for chained, multi-turn, and adaptive attacks. PyRIT's orchestrator / target / prompt-converter / scorer architecture. Why single-turn scanners systematically miss chained and adversarial-multi-turn threats.
